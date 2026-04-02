@@ -9,6 +9,25 @@ from ovrolwasolar import flagging
 import numpy as np
 
 
+def _is_ms_listing_filename(filename):
+    """True for LWA slow vis names ending in MHz.ms or MHz.ms.tar (lustre layout)."""
+    return filename.endswith('MHz.ms') or filename.endswith('MHz.ms.tar')
+
+
+def _parse_ms_listing_filename(filename):
+    """Parse time and band from standard YYYYMMDD_HHMMSS_<band> name (with .ms or .ms.tar)."""
+    tmpstr = filename[:15].replace('_', 'T')
+    timestr = tmpstr[:4] + '-' + tmpstr[4:6] + '-' + tmpstr[6:11] + ':' + tmpstr[11:13] + ':' + tmpstr[13:]
+    freqstr = filename[16:21]
+    return timestr, freqstr
+
+
+def _local_ms_dirname(listing_name):
+    """Path component under destination: tarball unpacks to the .ms name (strip .tar)."""
+    if listing_name.endswith('.ms.tar'):
+        return listing_name[:-4]
+    return listing_name
+
 
 def list_msfiles(intime, lustre=True, file_path='slow', server=None, time_interval='10s', 
                  bands=['32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz']):
@@ -21,6 +40,8 @@ def list_msfiles(intime, lustre=True, file_path='slow', server=None, time_interv
     :param time_interval: Options are '10s', '1min', '10min'
     :param bands: bands to list/download. Default to 12 bands above 30 MHz. Full list of available bands is
             ['13MHz', '18MHz', '23MHz', '27MHz', '32MHz', '36MHz', '41MHz', '46MHz', '50MHz', '55MHz', '59MHz', '64MHz', '69MHz', '73MHz', '78MHz', '82MHz']
+    Listings may be either ``*MHz.ms`` (measurement set) or ``*MHz.ms.tar`` (same layout archived); use
+    :func:`download_msfiles` which copies ``.ms`` as before and unpacks ``.ms.tar`` into the destination.
     """
     intimestr = intime.isot[:-4].replace('-','').replace(':','').replace('T','_')
     datestr = intime.isot[:10]
@@ -46,11 +67,9 @@ def list_msfiles(intime, lustre=True, file_path='slow', server=None, time_interv
             filenames = p.communicate()[0].decode('utf-8').split('\n')[:-1]
             if len(filenames) > 0:
                 for filename in filenames:
-                    if filename[-6:] == 'MHz.ms':
+                    if _is_ms_listing_filename(filename):
                         filestr = pathstr + filename
-                        tmpstr = filename[:15].replace('_', 'T')
-                        timestr = tmpstr[:4] + '-' + tmpstr[4:6] + '-' + tmpstr[6:11] + ':' + tmpstr[11:13] + ':' + tmpstr[13:]
-                        freqstr = filename[16:21]
+                        timestr, freqstr = _parse_ms_listing_filename(filename)
                         msfiles.append({'path': filestr, 'name': filename, 'time': timestr, 'freq': freqstr})
             else:
                 logging.info('Did not find any files at the given time {0:s}.'.format(intime.isot)) 
@@ -63,14 +82,12 @@ def list_msfiles(intime, lustre=True, file_path='slow', server=None, time_interv
         filenames = p.stdout.decode('utf-8').split('\n')[:-1]
         if len(filenames) > 0:
             for filename in filenames:
-                if filename[-6:] == 'MHz.ms':
+                if _is_ms_listing_filename(filename):
                     if server:
                         pathstr = '{0:s}:{1:s}/{2:s}'.format(server, file_path, filename)
                     else:
                         pathstr = '{0:s}/{1:s}'.format(file_path, filename)
-                    tmpstr = filename[:15].replace('_', 'T')
-                    timestr = tmpstr[:4] + '-' + tmpstr[4:6] + '-' + tmpstr[6:11] + ':' + tmpstr[11:13] + ':' + tmpstr[13:]
-                    freqstr = filename[16:21]
+                    timestr, freqstr = _parse_ms_listing_filename(filename)
                     msfiles.append({'path': pathstr, 'name': filename, 'time': timestr, 'freq': freqstr})
         else:
             logging.info('Did not find any files at the given time {0:s}.'.format(intime.isot)) 
@@ -78,14 +95,34 @@ def list_msfiles(intime, lustre=True, file_path='slow', server=None, time_interv
     return msfiles
 
 def download_msfiles_cmd(msfile_path, server, destination):
+    """
+    Copy one visibility from source to ``destination`` (directory).
+    ``.ms`` directories/files are copied as before; ``.ms.tar`` archives are copied then extracted
+    into ``destination`` and the tarball is removed.
+    """
+    basename = os.path.basename(msfile_path.rstrip('/'))
     if server:
         p = subprocess.Popen(shlex.split('rsync -az --numeric-ids --info=progress2 --no-perms --no-owner --no-group {0:s}:{1:s} {2:s}'.format(server, msfile_path, destination)))
     else:
-        #p = subprocess.Popen(shlex.split('rsync -az --numeric-ids --info=progress2 --no-perms --no-owner --no-group {0:s} {1:s}'.format(msfile_path, destination)))
         p = subprocess.Popen(shlex.split('cp -r {0:s} {1:s}'.format(msfile_path, destination)))
-    std_out, std_err = p.communicate()
-    if std_err:
-        print('<<',Time.now().isot,'>>',std_err)
+    _, std_err = p.communicate()
+    if p.returncode != 0:
+        logging.error('download_msfiles_cmd failed for %s (return code %s)', msfile_path, p.returncode)
+        if std_err:
+            print('<<',Time.now().isot,'>>',std_err)
+        return
+    if basename.endswith('.ms.tar'):
+        dest_root = destination.rstrip(os.sep)
+        tar_path = os.path.join(dest_root, basename)
+        try:
+            subprocess.run(['tar', 'xf', tar_path, '-C', destination], check=True)
+        except subprocess.CalledProcessError as e:
+            logging.error('untar failed for %s: %s', tar_path, e)
+            raise
+        try:
+            os.remove(tar_path)
+        except OSError as e:
+            logging.warning('could not remove tarball %s: %s', tar_path, e)
 
 def download_msfiles(msfiles, destination='/fast/solarpipe/realtime_pipeline/slow_working/', bands=None, verbose=True, server=None, maxthread=3):
     from multiprocessing.pool import ThreadPool
@@ -126,7 +163,7 @@ def download_msfiles(msfiles, destination='/fast/solarpipe/realtime_pipeline/slo
     time_completed = timeit.default_timer() 
     if verbose:
         print('<<',Time.now().isot,'>>','Downloading {0:d} files took in {1:.1f} s'.format(nfile, time_completed-time_bg))
-    omsfiles = [destination + n for n in omsfiles_name]
+    omsfiles = [destination + _local_ms_dirname(n) for n in omsfiles_name]
     return omsfiles
 
 

@@ -15,6 +15,14 @@ station=Station('ovro')
 obs = EarthLocation.from_geocentric(*station.ecef, unit=u.m)  # NB: The code below uses this global variable!
 scandur = 60.   # Duration of a normal scan (minutes)
 scangap = 1.    # Time gap between scans (minutes)
+
+
+def submit_sdf(sdf_name):
+    """Submit an SDF and propagate any failure to the scheduler process."""
+    print('Submitting', sdf_name)
+    subprocess.run(["lwaobserving", "submit-sdf", sdf_name], check=True)
+
+
 def approx_rise(t=None):
     '''  Given a time in MJD, determine the approximate sunrise time for that date.
          Sunrise is defined as rising above 10 degrees altitude.
@@ -84,7 +92,8 @@ def make_solar_sdf(trange=None, beam_to_use=2):
     # Create a template file using "lwaobserving" create command
     blah = subprocess.run(["lwaobserving","create-sdf","--n-obs","1","--sess-mode","POWER","--beam-num",str(beam_to_use),
        "--obs-mode","TRK_SOL", "--obs-start", trange[0].isot[:19],"--obs-dur","1800000","--obj-name","sun",
-       "--int-time","64","--do-cal","/lustre/solarpipe/solar_beam_sdfs/template.sdf"],stdout = subprocess.PIPE)
+       "--int-time","64","--do-cal","/lustre/solarpipe/solar_beam_sdfs/template.sdf"],stdout = subprocess.PIPE,
+       check=True)
     output = blah.stdout.decode('utf-8').split('\n')
     f = open("/lustre/solarpipe/solar_beam_sdfs/template.sdf",'r')
     lines = f.readlines()
@@ -198,8 +207,7 @@ def multiday_obs(ndays=7, startday=0, send=True, beam_to_use=2):
             mjd = int(Time.now().mjd) + 0.5 + i
         sdf_name = make_solar_sdf(Time(mjd,format='mjd'), beam_to_use=beam_to_use)
         if send:
-            print('Submitting',sdf_name)
-            os.system('lwaobserving submit-sdf '+sdf_name)
+            submit_sdf(sdf_name)
             sleep(2)
             
 def make_sdf(source_coord,trange,beam_to_use=5, scan_duration=1800,source_name='source',\
@@ -239,7 +247,8 @@ def make_sdf(source_coord,trange,beam_to_use=5, scan_duration=1800,source_name='
     blah = subprocess.run(["lwaobserving","create-sdf","--n-obs","1","--sess-mode","POWER","--beam-num",str(beam_to_use),\
         "--obs-mode","TRK_RADEC", "--ra", str(source_ra), "--dec", str(source_dec),"--obs-start", trange[0].isot[:19],\
         "--obs-dur",str(int(scan_duration*1000)),\
-        "--obj-name",source_name,"--do-cal","--int-time",str(integration_time),sdf_filename],stdout = subprocess.PIPE)
+        "--obj-name",source_name,"--do-cal","--int-time",str(integration_time),sdf_filename],stdout = subprocess.PIPE,
+        check=True)
     output = blah.stdout.decode('utf-8').split('\n')
     f = open(sdf_filename,'r')
     lines = f.readlines()
@@ -303,9 +312,8 @@ def make_sdf(source_coord,trange,beam_to_use=5, scan_duration=1800,source_name='
                 else:
                     for line in obs_block:
                         f.write(line)
-        if send:
-            print('Submitting',sdf_name)
-            os.system('lwaobserving submit-sdf '+sdf_name)
-            sleep(2)
+    if send:
+        submit_sdf(sdf_name)
+        sleep(2)
     return sdf_name
             

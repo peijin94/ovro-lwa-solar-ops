@@ -94,3 +94,24 @@ import beam_scheduling_sdf as bss
 bss.make_solar_sdf(ndays=7)
 ```
 
+### Scheduler Python environment
+
+Both the daily SDF submission job and the long-running `scheduler.service`
+must use only packages from the deployment Conda environment.  A package in
+`~/.local` can otherwise shadow the deployment copy and stop the executor from
+processing an accepted SDF.
+
+Install the tracked user-service drop-in for the account that runs
+`scheduler.service`:
+
+```bash
+mkdir -p ~/.config/systemd/user/scheduler.service.d
+cp beam/schedule/systemd/scheduler.service.d/10-python-no-user-site.conf \
+    ~/.config/systemd/user/scheduler.service.d/
+systemctl --user daemon-reload
+systemctl --user restart scheduler.service
+```
+
+Verify that `systemctl --user show scheduler.service -p Environment` includes
+`PYTHONNOUSERSITE=1`.  SDF creation and submission failures now propagate as a
+nonzero job result instead of being silently discarded.
